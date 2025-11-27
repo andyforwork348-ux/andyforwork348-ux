@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ClearMark - 圖片去浮水印工具</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            background-color: #f3f4f6;
+            touch-action: none; /* Prevent scrolling while drawing */
+            overflow: hidden; /* Main layout handles overflow */
+        }
+        .canvas-container {
+            background-image: 
+                linear-gradient(45deg, #e5e7eb 25%, transparent 25%), 
+                linear-gradient(-45deg, #e5e7eb 25%, transparent 25%), 
+                linear-gradient(45deg, transparent 75%, #e5e7eb 75%), 
+                linear-gradient(-45deg, transparent 75%, #e5e7eb 75%);
+            background-size: 20px 20px;
+            background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            /* Layout fix: Ensure canvas fits in remaining height minus headers */
+            max-height: calc(100vh - 180px); 
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        canvas {
+            cursor: crosshair;
+            max-width: 100%;
+            max-height: 100%; /* Fill container but respect aspect ratio */
+            object-fit: contain;
+        }
+        input[type=range] {
+            accent-color: #3b82f6;
+        }
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #c1c1c1; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8; 
+        }
+    </style>
+</head>
+<body class="h-screen flex flex-col text-slate-800">
+
+    <!-- Header -->
+    <header class="bg-white border-b border-gray-200 px-6 py-3 flex justify-between items-center shadow-sm z-20 flex-none h-16">
+        <div class="flex items-center gap-2">
+            <div class="bg-blue-600 p-1.5 rounded-lg">
+                <i data-lucide="eraser" class="text-white w-5 h-5"></i>
+            </div>
+            <h1 class="text-xl font-bold text-gray-800 tracking-tight">ClearMark</h1>
+        </div>
+        <div class="text-sm text-gray-500 hidden md:block">
+            塗抹浮水印區域，然後點擊「開始修復」
+        </div>
+        <button id="downloadBtn" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+            <i data-lucide="download" class="w-4 h-4"></i>
+            下載
+        </button>
+    </header>
+
+    <!-- Toolbar -->
+    <div class="bg-white border-b border-gray-200 px-4 py-3 flex flex-wrap gap-4 items-center justify-center sm:justify-between z-20 shadow-sm flex-none">
+        <div class="flex items-center gap-4">
+            <label class="cursor-pointer bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-medium transition-colors shadow-sm" title="選擇要修復的圖片">
+                <i data-lucide="image-plus" class="w-4 h-4"></i>
+                上傳圖片
+                <input type="file" id="imageInput" accept="image/*" class="hidden">
+            </label>
+
+            <!-- New Logo Upload Button -->
+            <label class="cursor-pointer bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-medium transition-colors shadow-sm" title="選擇 Logo 檔案 (推薦使用)">
+                <i data-lucide="stamp" class="w-4 h-4"></i>
+                選擇 Logo
+                <input type="file" id="logoInput" accept="image/png,image/jpeg" class="hidden">
+            </label>
+            
+            <div class="h-8 w-px bg-gray-300 mx-1"></div>
+
+            <div class="flex items-center gap-2">
+                <span class="text-xs font-medium text-gray-600">筆刷</span>
+                <input type="range" id="brushSize" min="5" max="100" value="20" class="w-24 sm:w-32 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
+                <span id="brushSizeDisplay" class="text-xs text-gray-500 w-6">20</span>
+            </div>
+            
+            <button id="undoBtn" class="p-2 hover:bg-gray-100 rounded-full text-gray-600 transition-colors" title="復原塗抹">
+                <i data-lucide="undo-2" class="w-5 h-5"></i>
+            </button>
+            <button id="clearMaskBtn" class="p-2 hover:bg-red-50 text-red-500 rounded-full transition-colors" title="清除所有塗抹">
+                <i data-lucide="trash-2" class="w-5 h-5"></i>
+            </button>
+        </div>
+
+        <button id="processBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg flex items-center gap-2 font-bold shadow-md transform active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none" disabled>
+            <i data-lucide="wand-2" class="w-4 h-4"></i>
+            開始修復
+        </button>
+    </div>
+
+    <!-- Main Canvas Area -->
+    <main class="flex-1 overflow-auto flex flex-col justify-center items-center p-4 bg-gray-100 relative w-full z-0" id="mainContainer">
+        
+        <!-- Empty State -->
+        <div id="emptyState" class="flex flex-col items-center justify-center text-gray-400">
+            <div class="w-24 h-24 bg-gray-200 rounded-full flex items-center justify-center mb-4">
+                <i data-lucide="image" class="w-10 h-10 text-gray-400"></i>
+            </div>
+            <p class="text-lg font-medium">請先上傳一張圖片</p>
+            <p class="text-sm mt-2">支援 JPG, PNG 等格式</p>
+        </div>
+
+        <!-- Canvas Container -->
+        <div id="canvasWrapper" class="canvas-container relative hidden rounded-sm overflow-hidden border border-gray-300 bg-white">
+            <!-- The Main Image Canvas -->
+            <canvas id="imageCanvas"></canvas>
+            <!-- The Mask Canvas (For drawing red lines) -->
+            <canvas id="maskCanvas" class="absolute top-0 left-0 opacity-60"></canvas>
+        </div>
+
+        <!-- Loading Overlay -->
+        <div id="loadingOverlay" class="absolute inset-0 bg-black/50 backdrop-blur-sm z-50 flex flex-col items-center justify-center hidden">
+            <div class="animate-spin rounded-full h-12 w-12 border-4 border-white border-t-transparent mb-4"></div>
+            <p class="text-white font-medium text-lg animate-pulse">正在智慧修復...</p>
+            <p class="text-white/80 text-sm mt-1">處理邊緣與紋理中</p>
+        </div>
+    </main>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-6 py-3 rounded-full shadow-lg text-sm transition-opacity opacity-0 pointer-events-none z-50 flex items-center gap-2">
+        <i data-lucide="info" class="w-4 h-4"></i>
+        <span id="toastMsg">Notification</span>
+    </div>
+
+    <script>
+        // --- Icons ---
+        lucide.createIcons();
+
+        // --- DOM Elements ---
+        const imageInput = document.getElementById('imageInput');
+        const logoInput = document.getElementById('logoInput'); // New
+        const brushSizeInput = document.getElementById('brushSize');
+        const brushSizeDisplay = document.getElementById('brushSizeDisplay');
+        const processBtn = document.getElementById('processBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const undoBtn = document.getElementById('undoBtn');
+        const clearMaskBtn = document.getElementById('clearMaskBtn');
+        
+        const canvasWrapper = document.getElementById('canvasWrapper');
+        const imageCanvas = document.getElementById('imageCanvas');
+        const maskCanvas = document.getElementById('maskCanvas');
+        const emptyState = document.getElementById('emptyState');
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const toast = document.getElementById('toast');
+        const toastMsg = document.getElementById('toastMsg');
+
+        // --- Contexts ---
+        const ctx = imageCanvas.getContext('2d', { willReadFrequently: true });
+        const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
+
+        // --- State ---
+        let isDrawing = false;
+        let originalImage = null;
+        let currentBrushSize = 20;
+        let history = []; // For Undo functionality (Mask only)
+        let scale = 1;
+        let userUploadedLogo = null; // Store user uploaded logo
+
+        // --- Initialization ---
+        function resizeCanvases(width, height) {
+            imageCanvas.width = width;
+            imageCanvas.height = height;
+            maskCanvas.width = width;
+            maskCanvas.height = height;
+            
+            maskCtx.lineCap = 'round';
+            maskCtx.lineJoin = 'round';
+            maskCtx.strokeStyle = '#ff0000';
+            maskCtx.lineWidth = currentBrushSize;
+        }
+
+        function showToast(message) {
+            toastMsg.innerText = message;
+            toast.classList.remove('opacity-0');
+            setTimeout(() => {
+                toast.classList.add('opacity-0');
+            }, 3000);
+        }
+
+        // --- Event Listeners: UI ---
+
+        // Brush Size
+        brushSizeInput.addEventListener('input', (e) => {
+            currentBrushSize = parseInt(e.target.value);
+            brushSizeDisplay.innerText = currentBrushSize;
+            maskCtx.lineWidth = currentBrushSize;
+        });
+
+        // Image Upload
+        imageInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    const maxSize = 2000; 
+                    let width = img.width;
+                    let height = img.height;
+
+                    if (width > maxSize || height > maxSize) {
+                        const ratio = Math.min(maxSize / width, maxSize / height);
+                        width = Math.floor(width * ratio);
+                        height = Math.floor(height * ratio);
+                        showToast(`圖片較大，已自動縮放至 ${width}x${height}`);
+                    }
+
+                    resizeCanvases(width, height);
+                    ctx.drawImage(img, 0, 0, width, height);
+                    
+                    originalImage = ctx.getImageData(0, 0, width, height);
+                    
+                    // UI Updates
+                    emptyState.classList.add('hidden');
+                    canvasWrapper.classList.remove('hidden');
+                    processBtn.disabled = false;
+                    downloadBtn.disabled = true; // Reset download on new image
+                    
+                    history = [];
+                    saveHistory();
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        // Logo Upload (New)
+        logoInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    userUploadedLogo = img;
+                    showToast("Logo 已載入，修復時將自動加入");
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        // Download
+        downloadBtn.addEventListener('click', () => {
+            if (!imageCanvas) return;
+            
+            try {
+                // Attempt to get data URL. This might fail if canvas is tainted (local file security).
+                const url = imageCanvas.toDataURL('image/png');
+                const link = document.createElement('a');
+                link.download = 'clearmark-result.png';
+                link.href = url;
+                link.click();
+            } catch (e) {
+                console.error("Download Error:", e);
+                alert("⚠️ 下載失敗：瀏覽器安全限制\n\n您似乎正在使用「自動載入」的本地 Logo。\n為了安全性，瀏覽器禁止下載這種圖片。\n\n✅ 解決方法：\n請使用上方的「選擇 Logo」按鈕，手動選擇您的 Logo 檔案，然後再試一次。");
+            }
+        });
+
+        // Clear Mask
+        clearMaskBtn.addEventListener('click', () => {
+            maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+            saveHistory();
+        });
+
+        // Undo
+        undoBtn.addEventListener('click', () => {
+            if (history.length > 1) {
+                history.pop(); 
+                const previousState = history[history.length - 1];
+                const img = new Image();
+                img.onload = () => {
+                    maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+                    maskCtx.drawImage(img, 0, 0);
+                };
+                img.src = previousState;
+            } else if (history.length === 1) {
+                maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+                history = []; 
+                saveHistory(); 
+            }
+        });
+
+        function saveHistory() {
+            history.push(maskCanvas.toDataURL());
+            if (history.length > 10) history.shift(); 
+        }
+
+        // --- Drawing Logic (Mask) ---
+
+        function getCoordinates(e) {
+            const rect = maskCanvas.getBoundingClientRect();
+            // Important: Handle coordinate scaling correctly based on displayed size vs intrinsic size
+            const scaleX = maskCanvas.width / rect.width;
+            const scaleY = maskCanvas.height / rect.height;
+
+            let clientX, clientY;
+            if (e.touches && e.touches.length > 0) {
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+            } else {
+                clientX = e.clientX;
+                clientY = e.clientY;
+            }
+
+            return {
+                x: (clientX - rect.left) * scaleX,
+                y: (clientY - rect.top) * scaleY
+            };
+        }
+
+        function startDrawing(e) {
+            if (!originalImage) return;
+            e.preventDefault();
+            isDrawing = true;
+            const { x, y } = getCoordinates(e);
+            
+            maskCtx.beginPath();
+            maskCtx.moveTo(x, y);
+            maskCtx.lineTo(x, y); 
+            maskCtx.stroke();
+        }
+
+        function draw(e) {
+            if (!isDrawing) return;
+            e.preventDefault(); 
+            const { x, y } = getCoordinates(e);
+            maskCtx.lineTo(x, y);
+            maskCtx.stroke();
+        }
+
+        function stopDrawing() {
+            if (isDrawing) {
+                isDrawing = false;
+                maskCtx.closePath();
+                saveHistory();
+            }
+        }
+
+        maskCanvas.addEventListener('mousedown', startDrawing);
+        maskCanvas.addEventListener('mousemove', draw);
+        maskCanvas.addEventListener('mouseup', stopDrawing);
+        maskCanvas.addEventListener('mouseout', stopDrawing);
+
+        maskCanvas.addEventListener('touchstart', startDrawing, { passive: false });
+        maskCanvas.addEventListener('touchmove', draw, { passive: false });
+        maskCanvas.addEventListener('touchend', stopDrawing);
+
+        // --- Advanced Inpainting Algorithm ---
+
+        processBtn.addEventListener('click', async () => {
+            if (!originalImage) return;
+
+            loadingOverlay.classList.remove('hidden');
+            
+            setTimeout(() => {
+                try {
+                    performSmartInpainting();
+                    
+                    // --- Logo Insertion Logic ---
+                    // Strategy: Prefer user uploaded logo (Safe), then try auto-load (Risky but requested)
+                    
+                    if (userUploadedLogo) {
+                        drawLogo(userUploadedLogo);
+                        finishProcessing("修復完成！(已使用上傳的 Logo)");
+                    } else {
+                        // Fallback: Try to load 'logo.png' automatically
+                        const logo = new Image();
+                        // Removed crossOrigin to prevent immediate load failure on file://
+                        
+                        logo.onload = () => {
+                            drawLogo(logo);
+                            finishProcessing("修復完成！(已加入 logo.png)");
+                        };
+                        
+                        logo.onerror = () => {
+                            // If auto-load fails, just finish without logo
+                            finishProcessing("修復完成 (未找到 logo.png)");
+                        };
+
+                        logo.src = 'logo.png';
+                    }
+
+                } catch (err) {
+                    console.error(err);
+                    showToast("處理時發生錯誤");
+                    loadingOverlay.classList.add('hidden');
+                }
+            }, 100);
+        });
+
+        function drawLogo(img) {
+            const padding = 20;
+            let logoWidth = img.width;
+            let logoHeight = img.height;
+            const maxLogoWidth = imageCanvas.width * 0.2; 
+            
+            if (logoWidth > maxLogoWidth) {
+                const scale = maxLogoWidth / logoWidth;
+                logoWidth *= scale;
+                logoHeight *= scale;
+            }
+            ctx.drawImage(img, padding, padding, logoWidth, logoHeight);
+        }
+
+        function finishProcessing(msg) {
+            showToast(msg);
+            downloadBtn.disabled = false;
+            loadingOverlay.classList.add('hidden');
+        }
+
+        function performSmartInpainting() {
+            const width = imageCanvas.width;
+            const height = imageCanvas.height;
+            const imgData = ctx.getImageData(0, 0, width, height);
+            const data = imgData.data;
+            const maskDataObj = maskCtx.getImageData(0, 0, width, height);
+            const maskData = maskDataObj.data;
+
+            // --- Phase 1: Classification ---
+            const status = new Uint8Array(width * height);
+            const maskIndices = [];
+            const w = width;
+            const h = height;
+
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    const i = (y * w + x) * 4;
+                    if (maskData[i + 3] > 0) { 
+                        status[y * w + x] = 1; // Needs filling
+                        maskIndices.push(y * w + x);
+                    } else {
+                        status[y * w + x] = 0; // Original
+                    }
+                }
+            }
+
+            if (maskIndices.length === 0) return;
+
+            // --- Phase 2: Inward Fill ---
+            let filledCount = 0;
+            let currentBoundary = [];
+            
+            for (let k = 0; k < maskIndices.length; k++) {
+                const idx = maskIndices[k];
+                if (hasValidNeighbor(idx, w, h, status)) {
+                    currentBoundary.push(idx);
+                }
+            }
+
+            let safetyLoop = 0;
+            const totalMasked = maskIndices.length;
+
+            while (filledCount < totalMasked && safetyLoop < w * 2) {
+                const nextBoundary = [];
+                
+                for (const idx of currentBoundary) {
+                    const color = getWeightedNeighborAverage(idx, w, h, data, status);
+                    if (color) {
+                        const i = idx * 4;
+                        data[i] = color.r;
+                        data[i+1] = color.g;
+                        data[i+2] = color.b;
+                    }
+                }
+
+                for (const idx of currentBoundary) {
+                    status[idx] = 2; // Marked as filled
+                    filledCount++;
+                }
+                
+                for (const idx of currentBoundary) {
+                    const neighbors = getMaskedNeighbors(idx, w, h, status);
+                    for (const nIdx of neighbors) {
+                        if (!nextBoundary.includes(nIdx)) {
+                            nextBoundary.push(nIdx);
+                        }
+                    }
+                }
+                
+                currentBoundary = nextBoundary;
+                
+                if (currentBoundary.length === 0 && filledCount < totalMasked) break; 
+                safetyLoop++;
+            }
+
+            // --- Phase 3: Smoothing ---
+            const iterations = 40; 
+            const smoothRadius = 2; 
+
+            for (let iter = 0; iter < iterations; iter++) {
+                if (iter % 2 === 0) {
+                    for (let k = 0; k < maskIndices.length; k++) {
+                        smoothPixel(maskIndices[k], w, h, data, smoothRadius);
+                    }
+                } else {
+                    for (let k = maskIndices.length - 1; k >= 0; k--) {
+                        smoothPixel(maskIndices[k], w, h, data, smoothRadius);
+                    }
+                }
+            }
+
+            ctx.putImageData(imgData, 0, 0);
+            maskCtx.clearRect(0, 0, width, height);
+            history = []; 
+            saveHistory();
+        }
+
+        // --- Helpers ---
+
+        function hasValidNeighbor(idx, w, h, status) {
+            const x = idx % w;
+            const y = Math.floor(idx / w);
+            const neighbors = [
+                {x: x-1, y: y}, {x: x+1, y: y},
+                {x: x, y: y-1}, {x: x, y: y+1}
+            ];
+            
+            for (const n of neighbors) {
+                if (n.x >= 0 && n.x < w && n.y >= 0 && n.y < h) {
+                    const nIdx = n.y * w + n.x;
+                    if (status[nIdx] === 0 || status[nIdx] === 2) return true;
+                }
+            }
+            return false;
+        }
+
+        function getMaskedNeighbors(idx, w, h, status) {
+            const x = idx % w;
+            const y = Math.floor(idx / w);
+            const result = [];
+            const dirs = [[-1,0], [1,0], [0,-1], [0,1]];
+            for (const d of dirs) {
+                const nx = x + d[0];
+                const ny = y + d[1];
+                if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+                    const nIdx = ny * w + nx;
+                    if (status[nIdx] === 1) result.push(nIdx);
+                }
+            }
+            return result;
+        }
+
+        function getWeightedNeighborAverage(idx, w, h, data, status) {
+            const x = idx % w;
+            const y = Math.floor(idx / w);
+            let rSum = 0, gSum = 0, bSum = 0, weightSum = 0;
+            
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    if (dx === 0 && dy === 0) continue;
+                    const nx = x + dx;
+                    const ny = y + dy;
+                    if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+                        const nIdx = ny * w + nx;
+                        const st = status[nIdx];
+                        if (st === 0 || st === 2) {
+                            const ni = nIdx * 4;
+                            const weight = st === 0 ? 1.2 : 1.0; 
+                            rSum += data[ni] * weight;
+                            gSum += data[ni+1] * weight;
+                            bSum += data[ni+2] * weight;
+                            weightSum += weight;
+                        }
+                    }
+                }
+            }
+            if (weightSum > 0) {
+                return { r: rSum / weightSum, g: gSum / weightSum, b: bSum / weightSum };
+            }
+            return null;
+        }
+
+        function smoothPixel(idx, w, h, data, radius) {
+            const x = idx % w;
+            const y = Math.floor(idx / w);
+            const i = idx * 4;
+            let rSum = 0, gSum = 0, bSum = 0, count = 0;
+            
+            for (let dy = -radius; dy <= radius; dy++) {
+                for (let dx = -radius; dx <= radius; dx++) {
+                    const nx = x + dx;
+                    const ny = y + dy;
+                    if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+                        const ni = (ny * w + nx) * 4;
+                        rSum += data[ni];
+                        gSum += data[ni+1];
+                        bSum += data[ni+2];
+                        count++;
+                    }
+                }
+            }
+            if (count > 0) {
+                data[i] = rSum / count;
+                data[i+1] = gSum / count;
+                data[i + 2] = bSum / count;
+            }
+        }
+    </script>
+</body>
+</html>
